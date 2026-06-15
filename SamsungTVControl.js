@@ -3,25 +3,27 @@ import xapi from 'xapi';
 /*
  * Samsung TV control via SmartThings OAuth (no bridge), 1 to 4 displays.
  *
- * Full documenation at: https://github.com/vtjoeh/samsung_tv_control
- *
  * All configuration is in the DEFAULT_OAUTH and DEFAULT_TVS constants below.
- * The macro builds its own Control Panel with one page per TV.
+ * The macro builds its own Control Panel: one page per TV, plus an About page.
  * Rotating OAuth token state is auto-saved to a local macro (STORE).
  *
  * Features:
  *  - 8-hour scheduled token refresh (keeps the 29-day chain alive with no button presses).
+ *  - Mute is a true toggle (local state tracking).
+ *  - Volume via minus / plus step buttons.
  *  - Per-display standby behavior via flags:
  *      powerOffOnStandby : power the TV off when codec enters Standby
  *      artModeOnHalfwake : trigger Art/Ambient mode when codec enters Halfwake
  *      powerOnWhenAwake  : power on (and switch to primaryHDMI when fully awake)
- *  - Video Device group button (Awake / Halfwake / Standby) on each page.
+ *  
  */
 
 // ===================== CONFIGURATION =====================
-const PANEL_ID   = 'samsung_tv';
-const PANEL_NAME = 'TVs';
-const REFRESH_MS = 8 * 60 * 60 * 1000;   // scheduled token refresh interval (8 hours)
+const PANEL_ID    = 'samsung_tv';
+const PANEL_NAME  = 'TVs';
+const INFO_URL    = 'https://github.com/vtjoeh/samsung_tv_control';
+const REFRESH_MS     = 8 * 60 * 60 * 1000;   // scheduled token refresh interval (8 hours)
+const VOLUME_SYNC_MS = 1000;                 // wait after last slider change before reading back volume
 
 const DEFAULT_OAUTH = {
   client: 'YOUR_CLIENT_ID',
@@ -30,7 +32,7 @@ const DEFAULT_OAUTH = {
 };
 
 // One entry per TV. Add or remove entries; up to 4 are supported.
-// Leave a deviceId blank to disable that TV (it gets no panel page).
+// A TV with a blank deviceId is skipped and gets no panel page.
 const DEFAULT_TVS = [
   {
     name:              'TV 1',
@@ -40,7 +42,7 @@ const DEFAULT_TVS = [
     artCapability:     'samsungvd.ambient',   // '' to disable the art button
     artCommand:        'setAmbientOn',
     powerOffOnStandby: true,
-    artModeOnHalfwake: false,
+    artModeOnHalfwake: true,
     powerOnWhenAwake:  true
   },
   {
@@ -50,7 +52,7 @@ const DEFAULT_TVS = [
     primaryHDMI:       'HDMI1',
     artCapability:     'samsungvd.ambient',
     artCommand:        'setAmbientOn',
-    powerOffOnStandby: false,
+    powerOffOnStandby: true,
     artModeOnHalfwake: true,
     powerOnWhenAwake:  true
   },
@@ -61,7 +63,7 @@ const DEFAULT_TVS = [
     primaryHDMI:       'HDMI1',
     artCapability:     'samsungvd.ambient',
     artCommand:        'setAmbientOn',
-    powerOffOnStandby: false,
+    powerOffOnStandby: true,
     artModeOnHalfwake: true,
     powerOnWhenAwake:  true
   }
@@ -74,7 +76,8 @@ const DEVICE_BASE = 'https://api.smartthings.com/v1/devices/';
 
 let OAUTH = null;
 let TVS   = null;
-const lastFire   = {};
+const lastFire     = {};
+const volSyncTimers = {};   // TV index -> debounced volume read-back timer
 
 // ---- Base64 (ASCII only, for client_id:client_secret) ----
 function b64(str) {
@@ -204,7 +207,6 @@ async function togglePower(tv) {
 }
 async function toggleMute(tv) {
   try {
-    // Flip locally tracked mute state (avoids slow/unreliable status round-trip)
     tv._muted = !tv._muted;
     await sendTo(tv, [{ capability: 'audioMute', command: tv._muted ? 'mute' : 'unmute' }]);
   } catch (e) { console.error('mute toggle failed: ' + JSON.stringify(e)); }
@@ -246,31 +248,47 @@ function setWidget(id, value) {
   return xapi.Command.UserInterface.Extensions.Widget.SetValue({ WidgetId: id, Value: String(value) })
     .catch(() => {});
 }
-// One-time sync on panel open / page change: position the HDMI highlight and volume
-// slider from live state, and show static config info in the status line.
+// One-time sync on panel open / page change: position the HDMI highlight and
+// volume slider, and show static config info in the status line.
 async function syncOnOpen(i) {
   const tv = TVS[i - 1];
   if (!tv) return;
-  // Static status line (always accurate, never goes stale)
   const art = (tv.artCapability && tv.artCommand) ? 'Supported' : 'None';
   setWidget('tv' + i + '_status', 'Primary: ' + tv.primaryHDMI + '    Art: ' + art);
-  // Live one-shot read for the interactive widgets
   try {
     const main  = await getStatus(tv);
-    const vol   = main.audioVolume && main.audioVolume.volume ? main.audioVolume.volume.value : null;
     const input = main.mediaInputSource && main.mediaInputSource.inputSource
                     ? main.mediaInputSource.inputSource.value : null;
+    const vol   = main.audioVolume && main.audioVolume.volume ? main.audioVolume.volume.value : null;
     const muted = main.audioMute && main.audioMute.mute ? main.audioMute.mute.value : null;
     if (input)        setWidget('tv' + i + '_hdmi', input);
     if (vol !== null) setWidget('tv' + i + '_volume', Math.round(vol / 100 * 255));
-    if (muted)        tv._muted = (muted === 'muted');   // seed local mute tracking
+    if (muted)        tv._muted = (muted === 'muted');
   } catch (e) {
     console.error('open sync failed for TV ' + i + ': ' + JSON.stringify(e));
   }
 }
 
+// Read back the real volume and snap the slider to it, 1s after the last drag.
+// The timer resets on every slider change so it only fires once dragging stops.
+function scheduleVolSync(i) {
+  if (volSyncTimers[i]) clearTimeout(volSyncTimers[i]);
+  volSyncTimers[i] = setTimeout(() => { volSyncTimers[i] = null; volSync(i); }, VOLUME_SYNC_MS);
+}
+async function volSync(i) {
+  const tv = TVS[i - 1];
+  if (!tv) return;
+  try {
+    const main = await getStatus(tv);
+    const vol  = main.audioVolume && main.audioVolume.volume ? main.audioVolume.volume.value : null;
+    if (vol !== null) setWidget('tv' + i + '_volume', Math.round(vol / 100 * 255));
+  } catch (e) {
+    console.error('volume sync failed for TV ' + i + ': ' + JSON.stringify(e));
+  }
+}
+
 // ---- Build Control Panel ----
-function pageXml(tv, i) {
+function tvPageXml(tv, i) {
   const values = tv.inputs.map((key, idx) =>
     '<Value><Key>' + esc(key) + '</Key><Name>' + esc(String(idx + 1)) + '</Name></Value>').join('');
   return '' +
@@ -282,18 +300,27 @@ function pageXml(tv, i) {
       '<Row><Name>Artwork Mode (if supported)</Name><Widget>' +
         '<WidgetId>tv' + i + '_art</WidgetId><Name>Artwork Mode</Name><Type>Button</Type><Options>size=4</Options>' +
       '</Widget></Row>' +
-      '<Row><Name>TV Volume</Name><Widget>' +
-        '<WidgetId>tv' + i + '_volume</WidgetId><Type>Slider</Type><Options>size=4</Options>' +
-      '</Widget></Row>' +
-      '<Row><Name></Name>' +
-        '<Widget><WidgetId>tv' + i + '_mute</WidgetId><Name>Mute</Name><Type>Button</Type><Options>size=2</Options></Widget>' +
-        '<Widget><WidgetId>tv' + i + '_power</WidgetId><Name>Power</Name><Type>Button</Type><Options>size=2</Options></Widget>' +
+      '<Row><Name>TV Volume</Name>' +
+        '<Widget><WidgetId>tv' + i + '_volume</WidgetId><Type>Slider</Type><Options>size=3</Options></Widget>' +
+        '<Widget><WidgetId>tv' + i + '_mute</WidgetId><Name>Mute</Name><Type>Button</Type><Options>size=1</Options></Widget>' +
+      '</Row>' +
+      '<Row><Name>TV Power</Name>' +
+        '<Widget><WidgetId>tv' + i + '_spacer2</WidgetId><Type>Spacer</Type><Options>size=3</Options></Widget>' +
+        '<Widget><WidgetId>tv' + i + '_power</WidgetId><Type>Button</Type><Options>size=1;icon=power</Options></Widget>' +
       '</Row>' +
       '<Row><Name>Status</Name><Widget>' +
         '<WidgetId>tv' + i + '_status</WidgetId><Name> </Name><Type>Text</Type><Options>size=4;fontSize=small;align=center</Options>' +
       '</Widget></Row>' +
+    '</Page>';
+}
+function aboutPageXml() {
+  return '' +
+    '<Page><Name>About</Name><PageId>tv_page_about</PageId>' +
+      '<Row><Name>For more info</Name><Widget>' +
+        '<WidgetId>about_info</WidgetId><Name>' + esc(INFO_URL) + '</Name><Type>Text</Type><Options>size=4;fontSize=normal;align=center</Options>' +
+      '</Widget></Row>' +
       '<Row><Name>Video Device</Name><Widget>' +
-        '<WidgetId>tv' + i + '_codec</WidgetId><Type>GroupButton</Type><Options>size=4</Options>' +
+        '<WidgetId>codec_state</WidgetId><Type>GroupButton</Type><Options>size=4</Options>' +
         '<ValueSpace>' +
           '<Value><Key>awake</Key><Name>Awake</Name></Value>' +
           '<Value><Key>halfwake</Key><Name>Halfwake</Name></Value>' +
@@ -304,7 +331,7 @@ function pageXml(tv, i) {
 }
 async function buildPanel() {
   if (!TVS.length) { console.warn('No TVs configured.'); return; }
-  const pages = TVS.map((tv, idx) => pageXml(tv, idx + 1)).join('');
+  const pages = TVS.map((tv, idx) => tvPageXml(tv, idx + 1)).join('') + aboutPageXml();
   const xml =
     '<Extensions><Panel>' +
       '<Order>1</Order>' +
@@ -321,12 +348,21 @@ async function buildPanel() {
 // ---- Widget events ----
 function debounced(id) {
   const now = Date.now();
-  if (lastFire[id] && now - lastFire[id] < 600) return false;
+  if (lastFire[id] && now - lastFire[id] < 400) return false;
   lastFire[id] = now;
   return true;
 }
 
 xapi.Event.UserInterface.Extensions.Widget.Action.on(async (e) => {
+  // Shared codec control on the About page
+  if (e.WidgetId === 'codec_state' && (e.Type === 'released' || e.Type === 'clicked')) {
+    if (!debounced(e.WidgetId + e.Value)) return;
+    if (e.Value === 'awake')         await xapi.Command.Standby.Deactivate();
+    else if (e.Value === 'halfwake') await xapi.Command.Standby.Halfwake();
+    else if (e.Value === 'standby')  await xapi.Command.Standby.Activate();
+    return;
+  }
+
   const m = /^tv(\d+)_(\w+)$/.exec(e.WidgetId);
   if (!m) return;
   const i  = parseInt(m[1], 10);
@@ -338,17 +374,13 @@ xapi.Event.UserInterface.Extensions.Widget.Action.on(async (e) => {
     if (debounced(e.WidgetId + e.Value)) await setInput(tv, e.Value);
   } else if (action === 'volume' && e.Type === 'changed') {
     await setVolume(tv, Math.round((parseInt(e.Value, 10) / 255) * 100));
+    scheduleVolSync(i);
   } else if (action === 'mute' && e.Type === 'clicked') {
     await toggleMute(tv);
   } else if (action === 'power' && e.Type === 'clicked') {
     await togglePower(tv);
   } else if (action === 'art' && e.Type === 'clicked') {
     await artMode(tv);
-  } else if (action === 'codec' && (e.Type === 'released' || e.Type === 'clicked')) {
-    if (!debounced(e.WidgetId + e.Value)) return;
-    if (e.Value === 'awake')         await xapi.Command.Standby.Deactivate();
-    else if (e.Value === 'halfwake') await xapi.Command.Standby.Halfwake();
-    else if (e.Value === 'standby')  await xapi.Command.Standby.Activate();
   }
 });
 
@@ -371,8 +403,8 @@ async function init() {
     await xapi.Config.HttpClient.Mode.set('On');
     loadSettings();
     await buildPanel();
-    await keepAliveRefresh();
-    setInterval(keepAliveRefresh, REFRESH_MS);
+    await getAccessToken();                     // refresh only if the stored token is near expiry
+    setInterval(keepAliveRefresh, REFRESH_MS);  // forced rotation only on the 8-hour timer
 
     const standbyState = await xapi.Status.Standby.State.get();
     await applyStandbyState(standbyState);
