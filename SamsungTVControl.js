@@ -3,6 +3,8 @@ import xapi from 'xapi';
 /*
  * Samsung TV control via SmartThings OAuth (no bridge), 1 to 4 displays.
  *
+ * For more info go to https://github.com/vtjoeh/samsung_tv_control
+ *
  * All configuration is in the DEFAULT_OAUTH and DEFAULT_TVS constants below.
  * The macro builds its own Control Panel: one page per TV, plus an About page.
  * Rotating OAuth token state is auto-saved to a local macro (STORE).
@@ -10,12 +12,14 @@ import xapi from 'xapi';
  * Features:
  *  - 8-hour scheduled token refresh (keeps the 29-day chain alive with no button presses).
  *  - Mute is a true toggle (local state tracking).
- *  - Volume via minus / plus step buttons.
+ *  - Volume slider; the slider is positioned from live state on panel open.
  *  - Per-display standby behavior via flags:
  *      powerOffOnStandby : power the TV off when codec enters Standby
  *      artModeOnHalfwake : trigger Art/Ambient mode when codec enters Halfwake
  *      powerOnWhenAwake  : power on (and switch to primaryHDMI when fully awake)
- *  
+ *  - On macro start the current standby state is read and applied immediately.
+ *  - Transient SmartThings errors (common when a TV is waking) are retried.
+ *  - About page shows the info link, last token refresh time, and any error note.
  */
 
 // ===================== CONFIGURATION =====================
@@ -23,7 +27,9 @@ const PANEL_ID    = 'samsung_tv';
 const PANEL_NAME  = 'TVs';
 const INFO_URL    = 'https://github.com/vtjoeh/samsung_tv_control';
 const REFRESH_MS     = 8 * 60 * 60 * 1000;   // scheduled token refresh interval (8 hours)
-const VOLUME_SYNC_MS = 1000;                 // wait after last slider change before reading back volume
+const SLIDER_FRESH_MS = 2500;                // only trust an on-open volume read this fast (ms)
+const STATUS_RETRIES  = 3;                   // attempts for a status read before giving up
+const STATUS_RETRY_MS = 1500;                // wait between status retries (ms)
 
 const DEFAULT_OAUTH = {
   client: 'YOUR_CLIENT_ID',
@@ -77,7 +83,10 @@ const DEVICE_BASE = 'https://api.smartthings.com/v1/devices/';
 let OAUTH = null;
 let TVS   = null;
 const lastFire     = {};
-const volSyncTimers = {};   // TV index -> debounced volume read-back timer
+let lastRefreshMs  = 0;        // when the token was last refreshed
+let lastError      = '';       // current comms error note ('' = healthy)
+
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
 // ---- Base64 (ASCII only, for client_id:client_secret) ----
 function b64(str) {
@@ -116,14 +125,36 @@ function loadSettings() {
 }
 
 // ---- Token state persistence (local storage macro) ----
+// The store file gets a human-readable header comment plus a single JSON line.
+// readStore extracts the JSON object regardless of the surrounding comment.
 async function readStore() {
   try {
     const res = await xapi.Command.Macros.Macro.Get({ Name: STORE, Content: 'True' });
-    return JSON.parse(res.Macro[0].Content);
+    const text = res.Macro[0].Content || '';
+    const match = text.match(/\{[\s\S]*\}/);   // grab the JSON object, ignoring any comment
+    return match ? JSON.parse(match[0]) : null;
   } catch (e) { return null; }
 }
+function fmt(ms) {
+  // Compact UTC stamp like 2026-06-15 03:00:00z
+  const d = new Date(ms);
+  const p = n => (n < 10 ? '0' : '') + n;
+  return d.getUTCFullYear() + '-' + p(d.getUTCMonth() + 1) + '-' + p(d.getUTCDate()) + ' ' +
+         p(d.getUTCHours()) + ':' + p(d.getUTCMinutes()) + ':' + p(d.getUTCSeconds()) + 'z';
+}
 async function writeStore(state) {
-  await xapi.Command.Macros.Macro.Save({ Name: STORE, Overwrite: 'True' }, JSON.stringify(state));
+  const now     = Date.now();
+  const nextRun = now + REFRESH_MS;
+  const expires = now + (29 * 24 * 60 * 60 * 1000);   // refresh token ~29 day lifetime
+  const header =
+    '/* DO NOT DELETE\n' +
+    ' *\n' +
+    ' * Used by the SamsungTVControl macro. Holds the rotating OAuth token.\n' +
+    ' * Leave this macro DISABLED. It is data only and must never be activated.\n' +
+    ' * Last update: ' + fmt(now) + '   next update: ' + fmt(nextRun) + '\n' +
+    ' * Refresh token expires on: ' + fmt(expires) + ' if the device is offline until then.\n' +
+    ' */\n';
+  await xapi.Command.Macros.Macro.Save({ Name: STORE, Overwrite: 'True' }, header + JSON.stringify(state));
 }
 
 // ---- OAuth refresh ----
@@ -143,6 +174,8 @@ async function refreshAccess(refreshToken) {
     expires_at:    Date.now() + (data.expires_in * 1000) - 60000
   };
   await writeStore(state);
+  lastRefreshMs = Date.now();
+  updateAbout();
   return state;
 }
 async function getAccessToken() {
@@ -187,14 +220,27 @@ async function sendTo(tv, parts) {
   }
 }
 async function getStatus(tv) {
-  const token = await getAccessToken();
-  const res = await xapi.Command.HttpClient.Get({
-    Url: DEVICE_BASE + tv.deviceId + '/status',
-    Header: ['Authorization: Bearer ' + token],
-    AllowInsecureHTTPS: 'False',
-    ResultBody: 'PlainText'
-  });
-  return JSON.parse(res.Body).components.main;
+  // Retry transient failures (400/500 are common while a TV is waking up).
+  let lastErr;
+  for (let attempt = 0; attempt < STATUS_RETRIES; attempt++) {
+    try {
+      const token = await getAccessToken();
+      const res = await xapi.Command.HttpClient.Get({
+        Url: DEVICE_BASE + tv.deviceId + '/status',
+        Header: ['Authorization: Bearer ' + token],
+        AllowInsecureHTTPS: 'False',
+        ResultBody: 'PlainText'
+      });
+      const main = JSON.parse(res.Body).components.main;
+      commsOk();                 // a good response clears any error note
+      return main;
+    } catch (e) {
+      lastErr = e;
+      if (attempt < STATUS_RETRIES - 1) await sleep(STATUS_RETRY_MS);
+    }
+  }
+  commsError('Cannot reach the TV right now. Retrying automatically.');
+  throw lastErr;
 }
 
 // ---- TV actions ----
@@ -248,42 +294,42 @@ function setWidget(id, value) {
   return xapi.Command.UserInterface.Extensions.Widget.SetValue({ WidgetId: id, Value: String(value) })
     .catch(() => {});
 }
-// One-time sync on panel open / page change: position the HDMI highlight and
-// volume slider, and show static config info in the status line.
+// About-page line: last token refresh time, and an error note when comms fail.
+function updateAbout() {
+  const refreshed = lastRefreshMs ? fmt(lastRefreshMs) : 'not yet';
+  const text = lastError
+    ? ('Last token refresh: ' + refreshed + '\n' + lastError)
+    : ('Last token refresh: ' + refreshed + '\nStatus: OK');
+  setWidget('about_status', text);
+}
+function commsError(msg) {
+  if (lastError !== msg) { lastError = msg; updateAbout(); }
+}
+function commsOk() {
+  if (lastError) { lastError = ''; updateAbout(); }   // clear note once comms recover
+}
+
+// One-time sync on panel open / page change: position the HDMI highlight, and
+// set the volume slider only if status returns quickly (a slow cold-start read
+// is discarded so the slider never snaps 15-30s after the page is opened).
 async function syncOnOpen(i) {
   const tv = TVS[i - 1];
   if (!tv) return;
   const art = (tv.artCapability && tv.artCommand) ? 'Supported' : 'None';
   setWidget('tv' + i + '_status', 'Primary: ' + tv.primaryHDMI + '    Art: ' + art);
+  const openedAt = Date.now();
   try {
     const main  = await getStatus(tv);
+    const fresh = (Date.now() - openedAt) < SLIDER_FRESH_MS;   // was the read fast enough to trust?
     const input = main.mediaInputSource && main.mediaInputSource.inputSource
                     ? main.mediaInputSource.inputSource.value : null;
     const vol   = main.audioVolume && main.audioVolume.volume ? main.audioVolume.volume.value : null;
     const muted = main.audioMute && main.audioMute.mute ? main.audioMute.mute.value : null;
-    if (input)        setWidget('tv' + i + '_hdmi', input);
-    if (vol !== null) setWidget('tv' + i + '_volume', Math.round(vol / 100 * 255));
-    if (muted)        tv._muted = (muted === 'muted');
+    if (input)                  setWidget('tv' + i + '_hdmi', input);
+    if (vol !== null && fresh)  setWidget('tv' + i + '_volume', Math.round(vol / 100 * 255));
+    if (muted)                  tv._muted = (muted === 'muted');
   } catch (e) {
     console.error('open sync failed for TV ' + i + ': ' + JSON.stringify(e));
-  }
-}
-
-// Read back the real volume and snap the slider to it, 1s after the last drag.
-// The timer resets on every slider change so it only fires once dragging stops.
-function scheduleVolSync(i) {
-  if (volSyncTimers[i]) clearTimeout(volSyncTimers[i]);
-  volSyncTimers[i] = setTimeout(() => { volSyncTimers[i] = null; volSync(i); }, VOLUME_SYNC_MS);
-}
-async function volSync(i) {
-  const tv = TVS[i - 1];
-  if (!tv) return;
-  try {
-    const main = await getStatus(tv);
-    const vol  = main.audioVolume && main.audioVolume.volume ? main.audioVolume.volume.value : null;
-    if (vol !== null) setWidget('tv' + i + '_volume', Math.round(vol / 100 * 255));
-  } catch (e) {
-    console.error('volume sync failed for TV ' + i + ': ' + JSON.stringify(e));
   }
 }
 
@@ -326,6 +372,9 @@ function aboutPageXml() {
           '<Value><Key>halfwake</Key><Name>Halfwake</Name></Value>' +
           '<Value><Key>standby</Key><Name>Standby</Name></Value>' +
         '</ValueSpace>' +
+      '</Widget></Row>' +
+      '<Row><Name>Status</Name><Widget>' +
+        '<WidgetId>about_status</WidgetId><Name> </Name><Type>Text</Type><Options>size=4;fontSize=small;align=center</Options>' +
       '</Widget></Row>' +
     '</Page>';
 }
@@ -374,7 +423,6 @@ xapi.Event.UserInterface.Extensions.Widget.Action.on(async (e) => {
     if (debounced(e.WidgetId + e.Value)) await setInput(tv, e.Value);
   } else if (action === 'volume' && e.Type === 'changed') {
     await setVolume(tv, Math.round((parseInt(e.Value, 10) / 255) * 100));
-    scheduleVolSync(i);
   } else if (action === 'mute' && e.Type === 'clicked') {
     await toggleMute(tv);
   } else if (action === 'power' && e.Type === 'clicked') {
@@ -387,6 +435,7 @@ xapi.Event.UserInterface.Extensions.Widget.Action.on(async (e) => {
 // ---- Sync GUI on page open / tab switch ----
 xapi.Event.UserInterface.Extensions.Page.Action.on((e) => {
   if (e.Type === 'Opened') {
+    if (e.PageId === 'tv_page_about') { updateAbout(); return; }
     const m = /^tv_page_(\d+)$/.exec(e.PageId || '');
     if (m) syncOnOpen(parseInt(m[1], 10));
   }
