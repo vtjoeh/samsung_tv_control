@@ -6,7 +6,8 @@ This integration is primarily useful in two scenarios. First, it enables the Cis
 
 Each TV in the `DEFAULT_TVS` array has three per-display standby flags: `powerOffOnStandby`, `artModeOnHalfwake`, and `powerOnWhenAwake`. These let you independently control how each display behaves when the codec changes wake state, so a display without art mode support or one you never want to power off can be configured independently. The manual panel buttons always attempt their command regardless of the flags. OAuth credentials and TV device IDs live directly in `SamsungTVControl.js`; do not commit your filled-in copy to a public repo.
 
-<img width="533" height="325" alt="image" src="https://github.com/user-attachments/assets/0350d954-01a1-40bc-bc7f-6d28ba777fe9" />
+<img width="1054" height="647" alt="image" src="https://github.com/user-attachments/assets/0860f3bd-6a35-4b52-a278-cde963f58bf3" />
+
 
 
 ## Setup
