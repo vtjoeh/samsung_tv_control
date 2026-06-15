@@ -227,14 +227,14 @@ The macro also sets `HttpClient Mode` to On at startup, but enabling it here fir
 2. Go to **Macro Editor -> Import from file** (or New) -> load `SamsungTVControl.js` -> Save -> Activate
 3. Do not activate the auto-created `SamsungTV_Store` macro. It holds the rotating token and is managed by the macro.
 4. If you previously built a Samsung TV panel by hand in the UI Extensions Editor, delete it. The macro creates its own panel (`samsung_tv`).
-5. Reboot the device.
+5. Restart the macro.
 6. Open the **Control Panel** on the Navigator or Touch controller -> **TVs** -> test each page.
 
 ---
 
 ## How It Works
 
-- **Tokens.** The macro refreshes the access token every 8 hours and on every reboot, persisting the rotating refresh token to the `SamsungTV_Store` macro. As long as the device is online at least once every 29 days, it runs indefinitely with no user interaction.
+- **Tokens.** The macro refreshes the access token every 8 hours and on macro restart includin reboots, persisting the rotating refresh token to the `SamsungTV_Store` macro. As long as the device is online at least once every 29 days, it runs indefinitely with no user interaction.
 - **GUI sync.** When you open the panel or switch TV tabs, the macro reads the TV once and sets the HDMI highlight and volume slider. The status line shows static config info (`Primary` input and whether `Art` is supported).
 - **Standby.** When the codec changes wake state, the macro applies each TV's flags: power off on standby, art on half-wake, power on and primary input when awake. The Video Device buttons (Awake / Halfwake / Standby) drive the codec, which then cascades to the TVs.
 
@@ -259,4 +259,4 @@ If the device is offline for more than 29 days, the refresh token chain lapses. 
 1. Repeat Steps 3 and 4 to get a new seed refresh token.
 2. Update `seed` in `DEFAULT_OAUTH`.
 3. In the Macro Editor, set the `SamsungTV_Store` content to `{}` and save.
-4. Reboot the device.
+4. Restart the macro (or reboot device).
