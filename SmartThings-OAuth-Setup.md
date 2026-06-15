@@ -7,7 +7,7 @@ Control 1 to 4 Samsung TVs from a Cisco RoomOS device using the SmartThings clou
 ## Prerequisites
 
 - A SmartThings account with your Samsung TV(s) already added in the SmartThings mobile app
-- A Cisco RoomOS device (RoomOS 11.x)
+- A Cisco RoomOS device (RoomOS 11.x). Microsoft Teams Rooms mode works. 
 - The `SamsungTVControl.js` macro file
 - A computer (Mac or Windows) to run the one-time setup
 
