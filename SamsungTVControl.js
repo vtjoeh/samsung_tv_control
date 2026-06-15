@@ -42,7 +42,7 @@ const DEFAULT_TVS = [
     artCapability:     'samsungvd.ambient',   // '' to disable the art button
     artCommand:        'setAmbientOn',
     powerOffOnStandby: true,
-    artModeOnHalfwake: true,
+    artModeOnHalfwake: false,
     powerOnWhenAwake:  true
   },
   {
@@ -52,7 +52,7 @@ const DEFAULT_TVS = [
     primaryHDMI:       'HDMI1',
     artCapability:     'samsungvd.ambient',
     artCommand:        'setAmbientOn',
-    powerOffOnStandby: true,
+    powerOffOnStandby: false,
     artModeOnHalfwake: true,
     powerOnWhenAwake:  true
   },
@@ -63,7 +63,7 @@ const DEFAULT_TVS = [
     primaryHDMI:       'HDMI1',
     artCapability:     'samsungvd.ambient',
     artCommand:        'setAmbientOn',
-    powerOffOnStandby: true,
+    powerOffOnStandby: false,
     artModeOnHalfwake: true,
     powerOnWhenAwake:  true
   }
