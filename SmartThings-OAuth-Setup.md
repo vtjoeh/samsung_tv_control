@@ -7,7 +7,7 @@ Control 1 to 4 Samsung TVs from a Cisco RoomOS device using the SmartThings clou
 ## Prerequisites
 
 - A SmartThings account with your Samsung TV(s) already added in the SmartThings mobile app
-- A Cisco RoomOS device (RoomOS 11.x). Microsoft Teams Rooms mode works. 
+- A Cisco RoomOS device (RoomOS 11.x)
 - The `SamsungTVControl.js` macro file
 - A computer (Mac or Windows) to run the one-time setup
 
@@ -170,7 +170,7 @@ Replace:
 
 ### 6b: TV settings
 
-The file ships with three TV entries, up to four are supported. Fill in the device IDs you want and delete any entries you do not need.
+The file ships with three TV entries. Fill in the device IDs you want and delete any entries you do not need.
 
 ```javascript
 const DEFAULT_TVS = [
@@ -185,7 +185,7 @@ const DEFAULT_TVS = [
     artModeOnHalfwake: true,
     powerOnWhenAwake:  true
   },
-  // TV 2 - TV 4 follow the same shape
+  // TV 2 and TV 3 follow the same shape
 ];
 ```
 
@@ -223,20 +223,52 @@ The macro also sets `HttpClient Mode` to On at startup, but enabling it here fir
 
 ## Step 8: Load the Macro
 
-1. Open the device web UI at `https://DEVICE-IP` 
-2. Go to **Macro Editor -> Import from file** (or New) -> load `SamsungTVControl.js` -> Save -> Activate
-3. Do not activate the auto-created `SamsungTV_Store` macro. It holds the rotating token and is managed by the macro.
-4. If you previously built a Samsung TV panel by hand in the UI Extensions Editor, delete it. The macro creates its own panel (`samsung_tv`).
-5. Restart the macro.
-6. Open the **Control Panel** on the Navigator or Touch controller -> **TVs** -> test each page.
+You can load the macro locally on the device or centrally through Control Hub.
+
+**Local (device web interface):**
+
+1. Open the device web UI at `https://DEVICE-IP` (or `https://localhost` when connected directly to the device).
+2. Go to **Macro Editor -> Import from file** (or New) -> load `SamsungTVControl.js` -> Save -> Activate.
+
+**Control Hub (`https://admin.webex.com`):**
+
+1. Sign in at `https://admin.webex.com`.
+2. Go to **Management -> Devices** and select the device.
+3. Open **Macros** (or **Configurations -> Macros**, depending on your view).
+4. Add a new macro, paste or upload `SamsungTVControl.js`, Save, and Activate. Control Hub pushes it to the device.
+
+**Then, for either method:**
+
+5. Leave the auto-created `SamsungTV_Store` macro **disabled**. It is data only, holds the rotating token, and must never be activated or deleted while the integration is running.
+6. If you previously built a Samsung TV panel by hand in the UI Extensions Editor, delete it. The macro creates its own panel (`samsung_tv`).
+7. Open the **Control Panel** on the Navigator or Touch controller -> **TVs** -> test each page.
+
+> You do not need to reboot the codec to apply changes. Just restart the macro: toggle it off and back on in the Macro Editor, or press Save. The macro rebuilds its panel and re-reads its token on every restart.
+
+---
+
+## Multiple Room Deployments
+
+Use the **same OAuth Client ID and Client Secret in every room**. You do not create a separate OAuth app per room. The only value that must be unique per codec is the refresh token (`seed`), because refresh tokens are single-holder: if two codecs share one refresh token, they invalidate each other on rotation.
+
+For each room:
+
+1. Repeat only **Step 3** (browser authorization) and **Step 4** (token exchange) to mint a unique refresh token.
+2. Put that token in that room's `DEFAULT_OAUTH.seed`, keeping `client` and `secret` identical across all rooms.
+3. Use the correct `deviceId` for that room's TV(s).
+
+Notes:
+- If all TVs are in one Samsung account and location, a single authorization sees every TV, so you reuse the relevant `deviceId` per room. If TVs span different Samsung accounts, authorize once per account.
+- SmartThings rate-limits token requests to 120 per hour per client ID, which is ample for the 8-hour refresh cycle across many rooms.
 
 ---
 
 ## How It Works
 
-- **Tokens.** The macro refreshes the access token every 8 hours and on macro restart includin reboots, persisting the rotating refresh token to the `SamsungTV_Store` macro. As long as the device is online at least once every 29 days, it runs indefinitely with no user interaction.
-- **GUI sync.** When you open the panel or switch TV tabs, the macro reads the TV once and sets the HDMI highlight and volume slider. The status line shows static config info (`Primary` input and whether `Art` is supported).
-- **Standby.** When the codec changes wake state, the macro applies each TV's flags: power off on standby, art on half-wake, power on and primary input when awake. The Video Device buttons (Awake / Halfwake / Standby) drive the codec, which then cascades to the TVs.
+- **Tokens.** The macro refreshes the access token every 8 hours and persists the rotating refresh token to the `SamsungTV_Store` macro. As long as the device is online at least once every 29 days, it runs indefinitely with no user interaction.
+- **GUI sync.** When you open the panel or switch TV tabs, the macro reads the TV once and sets the HDMI highlight (and the volume slider if the read returns quickly). The status line shows static config info (`Primary` input and whether `Art` is supported).
+- **Resilience.** Transient SmartThings errors, common when a TV is just waking, are retried automatically. The About page shows the last token refresh time and any current error note, which clears once communication recovers.
+- **Standby.** When the codec changes wake state, the macro applies each TV's flags: power off on standby, art on half-wake, power on and primary input when awake. The Video Device buttons (Awake / Halfwake / Standby) on the About page drive the codec, which then cascades to the TVs.
 
 ---
 
@@ -259,4 +291,4 @@ If the device is offline for more than 29 days, the refresh token chain lapses. 
 1. Repeat Steps 3 and 4 to get a new seed refresh token.
 2. Update `seed` in `DEFAULT_OAUTH`.
 3. In the Macro Editor, set the `SamsungTV_Store` content to `{}` and save.
-4. Restart the macro (or reboot device).
+4. Reboot the device.
