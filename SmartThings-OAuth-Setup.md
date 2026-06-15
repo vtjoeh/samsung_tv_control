@@ -170,7 +170,7 @@ Replace:
 
 ### 6b: TV settings
 
-The file ships with three TV entries. Fill in the device IDs you want and delete any entries you do not need.
+The file ships with three TV entries, up to four are supported. Fill in the device IDs you want and delete any entries you do not need.
 
 ```javascript
 const DEFAULT_TVS = [
@@ -185,7 +185,7 @@ const DEFAULT_TVS = [
     artModeOnHalfwake: true,
     powerOnWhenAwake:  true
   },
-  // TV 2 and TV 3 follow the same shape
+  // TV 2 - TV 4 follow the same shape
 ];
 ```
 
