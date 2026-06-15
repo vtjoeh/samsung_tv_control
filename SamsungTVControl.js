@@ -3,19 +3,18 @@ import xapi from 'xapi';
 /*
  * Samsung TV control via SmartThings OAuth (no bridge), 1 to 4 displays.
  *
+ * Full documenation at: https://github.com/vtjoeh/samsung_tv_control
+ *
  * All configuration is in the DEFAULT_OAUTH and DEFAULT_TVS constants below.
  * The macro builds its own Control Panel with one page per TV.
  * Rotating OAuth token state is auto-saved to a local macro (STORE).
  *
  * Features:
  *  - 8-hour scheduled token refresh (keeps the 29-day chain alive with no button presses).
- *  - Mute is a true toggle (reads live state, sends mute or unmute).
  *  - Per-display standby behavior via flags:
  *      powerOffOnStandby : power the TV off when codec enters Standby
  *      artModeOnHalfwake : trigger Art/Ambient mode when codec enters Halfwake
  *      powerOnWhenAwake  : power on (and switch to primaryHDMI when fully awake)
- *  - On macro start/reboot the current standby state is read and applied immediately.
- *  - Panel open / page change syncs GUI; status also refreshes after each button/slider.
  *  - Video Device group button (Awake / Halfwake / Standby) on each page.
  */
 
@@ -41,7 +40,7 @@ const DEFAULT_TVS = [
     artCapability:     'samsungvd.ambient',   // '' to disable the art button
     artCommand:        'setAmbientOn',
     powerOffOnStandby: true,
-    artModeOnHalfwake: true,
+    artModeOnHalfwake: false,
     powerOnWhenAwake:  true
   },
   {
@@ -51,7 +50,7 @@ const DEFAULT_TVS = [
     primaryHDMI:       'HDMI1',
     artCapability:     'samsungvd.ambient',
     artCommand:        'setAmbientOn',
-    powerOffOnStandby: true,
+    powerOffOnStandby: false,
     artModeOnHalfwake: true,
     powerOnWhenAwake:  true
   },
@@ -62,7 +61,7 @@ const DEFAULT_TVS = [
     primaryHDMI:       'HDMI1',
     artCapability:     'samsungvd.ambient',
     artCommand:        'setAmbientOn',
-    powerOffOnStandby: true,
+    powerOffOnStandby: false,
     artModeOnHalfwake: true,
     powerOnWhenAwake:  true
   }
