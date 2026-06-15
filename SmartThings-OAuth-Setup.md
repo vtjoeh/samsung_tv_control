@@ -223,7 +223,7 @@ The macro also sets `HttpClient Mode` to On at startup, but enabling it here fir
 
 ## Step 8: Load the Macro
 
-1. Open the device web UI at `https://DEVICE-IP`
+1. Open the device web UI at `https://DEVICE-IP` 
 2. Go to **Macro Editor -> Import from file** (or New) -> load `SamsungTVControl.js` -> Save -> Activate
 3. Do not activate the auto-created `SamsungTV_Store` macro. It holds the rotating token and is managed by the macro.
 4. If you previously built a Samsung TV panel by hand in the UI Extensions Editor, delete it. The macro creates its own panel (`samsung_tv`).
