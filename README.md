@@ -6,6 +6,9 @@ This integration is primarily useful in two scenarios. First, it enables the Cis
 
 Each TV in the `DEFAULT_TVS` array has three per-display standby flags: `powerOffOnStandby`, `artModeOnHalfwake`, and `powerOnWhenAwake`. These let you independently control how each display behaves when the codec changes wake state, so a display without art mode support or one you never want to power off can be configured independently. The manual panel buttons always attempt their command regardless of the flags. OAuth credentials and TV device IDs live directly in `SamsungTVControl.js`; do not commit your filled-in copy to a public repo.
 
+<img width="533" height="325" alt="image" src="https://github.com/user-attachments/assets/0350d954-01a1-40bc-bc7f-6d28ba777fe9" />
+
+
 ## Setup
 
 See [SetupSmartTVControl.md](SetupSmartTVControl.md) for full step-by-step instructions covering Mac and Windows. At a high level: install the SmartThings CLI, create an OAuth-In app, do a one-time browser authorization using `https://httpbin.org/get` as the redirect URI, exchange the code for a refresh token, look up your TV device IDs, fill in the placeholder blocks in `SamsungTVControl.js`, enable `HttpClient Mode` on the codec, and load the macro. Add `SamsungTV_Store.js` to your `.gitignore` to avoid accidentally publishing a live token.
