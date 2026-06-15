@@ -4,6 +4,8 @@ A Cisco RoomOS macro that controls 1 to 4 Samsung TVs via the SmartThings cloud 
 
 Each TV in the `DEFAULT_TVS` array has three per-display standby flags: `powerOffOnStandby`, `artModeOnHalfwake`, and `powerOnWhenAwake`. These let you independently control how each display behaves when the codec changes wake state, so a display without art mode support or one you never want to power off can be configured independently. The manual panel buttons always attempt their command regardless of the flags. OAuth credentials and TV device IDs live directly in `SamsungTVControl.js`; do not commit your filled-in copy to a public repo.
 
+An additional macro 'SamsungTV_store.js' is automatically created to store information. Leave this macro on device and disabled. 
+
 <img width="1050" height="636" alt="image" src="https://github.com/user-attachments/assets/93f588f9-ff12-45af-90c4-bb5589bb8b01" />
 
 ## Setup
