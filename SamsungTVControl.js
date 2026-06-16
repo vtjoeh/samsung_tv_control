@@ -360,6 +360,21 @@ function artMode(tv) {
   return sendTo(tv, [{ capability: tv.artCapability, command: tv.artCommand, arguments: [] }]);
 }
 
+// Returns true if the TV is currently in ambient/art mode.
+// Falls back to false on any error so a failed read never blocks the art command.
+async function isInArtMode(tv) {
+  if (!tv.artCapability) return false;
+  try {
+    const main = await getStatus(tv);
+    const cap  = main[tv.artCapability];
+    // samsungvd.ambient reports { ambientPower: { value: 'on'|'off' } }
+    if (cap && cap.ambientPower) return cap.ambientPower.value === 'on';
+    // Fallback: check any key whose value is 'on'
+    if (cap) return Object.values(cap).some(v => v && v.value === 'on');
+  } catch (e) { /* treat as not in art mode */ }
+  return false;
+}
+
 // ---- Standby integration (per-display flags gate automatic behavior only) ----
 async function applyStandbyState(state) {
   qLog('Event: Standby State Change\r\nNew state: ' + state);
@@ -385,6 +400,15 @@ async function applyStandbyState(state) {
         if (tv.powerOffOnStandby) {
           qLog('Event: Standby Action\r\nTV: ' + tv.name + '\r\nAction: Power Off (Standby)');
           await powerOff(tv);
+        } else if (tv.artModeOnHalfwake && tv.artCapability) {
+          // TV is not being powered off: put it in art mode if it isn't already
+          const alreadyInArt = await isInArtMode(tv);
+          if (alreadyInArt) {
+            qLog('Event: Standby Action\r\nTV: ' + tv.name + '\r\nAction: Art Mode (Standby) - already in art mode, skipped');
+          } else {
+            qLog('Event: Standby Action\r\nTV: ' + tv.name + '\r\nAction: Art Mode (Standby)');
+            await artMode(tv);
+          }
         }
       }
     } catch (e) {
