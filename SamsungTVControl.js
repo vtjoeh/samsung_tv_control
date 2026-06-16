@@ -19,6 +19,10 @@ import xapi from 'xapi';
  *      powerOnWhenAwake  : power on (and switch to primaryHDMI when fully awake)
  *  - On macro start the current standby state is read and applied immediately.
  *  - Transient SmartThings errors (common when a TV is waking) are retried.
+ *  - All outbound HTTP is serialized through one queue so the codec never runs
+ *    out of connections during burst actions.
+ *  - Optional built-in Webex device logging for deployment troubleshooting
+ *    (POST_DEVICE_LOG_TO_WEBEX); set false or leave credentials blank to disable.
  *  - About page shows the info link, last token refresh time, and any error note.
  */
 
@@ -30,6 +34,17 @@ const REFRESH_MS     = 8 * 60 * 60 * 1000;   // scheduled token refresh interval
 const SLIDER_FRESH_MS = 2500;                // only trust an on-open volume read this fast (ms)
 const STATUS_RETRIES  = 3;                   // attempts for a status read before giving up
 const STATUS_RETRY_MS = 1500;                // wait between status retries (ms)
+const HTTP_QUEUE_TIMEOUT = 5;                // per-request HttpClient timeout in seconds (default is 30)
+const WEBEX_LOG_TIMEOUT  = 2;                // shorter timeout for the non-critical Webex log post
+
+// ---- Device logging (optional, for deployment troubleshooting) ----
+// Set to false to disable all Webex logging with no side effects. When false,
+// or when BOT_TOKEN / ROOM_ID are blank, logging is skipped silently (events
+// still go to the macro console).
+const POST_DEVICE_LOG_TO_WEBEX = false;
+const WEBEX_BOT_TOKEN = 'YOUR_WEBEX_BOT_TOKEN';
+const WEBEX_ROOM_ID   = 'YOUR_WEBEX_ROOM_ID';
+const WEBEX_URL       = 'https://webexapis.com/v1/messages';
 
 const DEFAULT_OAUTH = {
   client: 'YOUR_CLIENT_ID',
@@ -85,8 +100,66 @@ let TVS   = null;
 const lastFire     = {};
 let lastRefreshMs  = 0;        // when the token was last refreshed
 let lastError      = '';       // current comms error note ('' = healthy)
+let deviceName     = '';       // cached for log messages
+let serialNumber   = '';
+let deviceInfoLoaded = false;
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+// ---- Global HTTP queue ----
+// The codec allows only a few concurrent outbound HTTP requests ("No available
+// http connections" otherwise). Every outbound request (SmartThings commands,
+// status reads, token refreshes, and the Webex log posts) is funneled through
+// this queue so exactly one request is in flight at a time. Each task waits for
+// the previous one to fully resolve or reject before starting.
+let httpChain = Promise.resolve();
+function queueHttp(task) {
+  const run = httpChain.then(task, task);   // run regardless of prior success/failure
+  // keep the chain alive even if a task throws, so one failure can't stall the queue
+  httpChain = run.then(() => {}, () => {});
+  return run;
+}
+
+// ---- Device logging (built in, queued) ----
+// qLog() always logs to the macro console. If POST_DEVICE_LOG_TO_WEBEX is true
+// and both credentials are set, it also queues a Markdown post to a Webex space.
+function logTimeStamp() {
+  const t = new Date();
+  const pad = n => (n < 10 ? '0' + n : '' + n);
+  const tzMatch = t.toString().match(/(GMT|UTC)([\-+]\d{2}:?\d{2})/);
+  const tz = tzMatch ? ' ' + tzMatch[0] : '';
+  return t.getFullYear() + '-' + pad(t.getMonth() + 1) + '-' + pad(t.getDate()) +
+    ' ' + t.toLocaleTimeString() + tz;
+}
+async function ensureDeviceInfo() {
+  if (deviceInfoLoaded) return;
+  try {
+    const su = await xapi.Status.SystemUnit.get();
+    deviceName   = su.BroadcastName || '';
+    serialNumber = (su.Hardware && su.Hardware.Module) ? su.Hardware.Module.SerialNumber : '';
+  } catch (e) { /* leave blanks */ }
+  deviceInfoLoaded = true;
+}
+function webexLoggingEnabled() {
+  return POST_DEVICE_LOG_TO_WEBEX && WEBEX_BOT_TOKEN && WEBEX_ROOM_ID;
+}
+function qLog(text) {
+  console.log(text);
+  if (!webexLoggingEnabled()) return;
+  queueHttp(async () => {
+    await ensureDeviceInfo();
+    const markdown = 'Device: ' + deviceName + ' / ' + serialNumber + ' / ' + logTimeStamp() +
+                     '\n```\n' + text + '\n```';
+    return xapi.Command.HttpClient.Post({
+      Url: WEBEX_URL,
+      Header: ['Content-Type: application/json', 'Authorization: Bearer ' + WEBEX_BOT_TOKEN],
+      AllowInsecureHTTPS: 'False',
+      Timeout: WEBEX_LOG_TIMEOUT,
+      ResultBody: 'PlainText'
+    }, JSON.stringify({ roomId: WEBEX_ROOM_ID, markdown: markdown }))
+      .catch(() => {});   // never let a failed log post surface as an error
+  });
+}
 
 // ---- Base64 (ASCII only, for client_id:client_secret) ----
 function b64(str) {
@@ -131,21 +204,20 @@ async function readStore() {
   try {
     const res = await xapi.Command.Macros.Macro.Get({ Name: STORE, Content: 'True' });
     const text = res.Macro[0].Content || '';
-    const match = text.match(/\{[\s\S]*\}/);   // grab the JSON object, ignoring any comment
-    return match ? JSON.parse(match[0]) : null;
+    // Content is valid JS: `let tokenData = {...};`  Extract the JSON object.
+    const match = text.match(/let\s+tokenData\s*=\s*(\{[\s\S]*?\});/);
+    return match ? JSON.parse(match[1]) : null;
   } catch (e) { return null; }
 }
 function fmt(ms) {
-  // Compact UTC stamp like 2026-06-15 03:00:00z
-  const d = new Date(ms);
-  const p = n => (n < 10 ? '0' : '') + n;
+  const d = new Date(ms), p = n => (n < 10 ? '0' : '') + n;
   return d.getUTCFullYear() + '-' + p(d.getUTCMonth() + 1) + '-' + p(d.getUTCDate()) + ' ' +
          p(d.getUTCHours()) + ':' + p(d.getUTCMinutes()) + ':' + p(d.getUTCSeconds()) + 'z';
 }
 async function writeStore(state) {
   const now     = Date.now();
   const nextRun = now + REFRESH_MS;
-  const expires = now + (29 * 24 * 60 * 60 * 1000);   // refresh token ~29 day lifetime
+  const expires = now + (29 * 24 * 60 * 60 * 1000);
   const header =
     '/* DO NOT DELETE\n' +
     ' *\n' +
@@ -153,20 +225,22 @@ async function writeStore(state) {
     ' * Leave this macro DISABLED. It is data only and must never be activated.\n' +
     ' * Last update: ' + fmt(now) + '   next update: ' + fmt(nextRun) + '\n' +
     ' * Refresh token expires on: ' + fmt(expires) + ' if the device is offline until then.\n' +
-    ' */\n';
-  await xapi.Command.Macros.Macro.Save({ Name: STORE, Overwrite: 'True' }, header + JSON.stringify(state));
+    ' */\n' +
+    'let tokenData = ' + JSON.stringify(state) + ';\n';
+  await xapi.Command.Macros.Macro.Save({ Name: STORE, Overwrite: 'True' }, header);
 }
 
 // ---- OAuth refresh ----
 async function refreshAccess(refreshToken) {
   const basic = b64(OAUTH.client + ':' + OAUTH.secret);
   const body  = 'grant_type=refresh_token&client_id=' + OAUTH.client + '&refresh_token=' + refreshToken;
-  const res = await xapi.Command.HttpClient.Post({
+  const res = await queueHttp(() => xapi.Command.HttpClient.Post({
     Url: TOKEN_URL,
     Header: ['Authorization: Basic ' + basic, 'Content-Type: application/x-www-form-urlencoded'],
     AllowInsecureHTTPS: 'False',
+    Timeout: HTTP_QUEUE_TIMEOUT,
     ResultBody: 'PlainText'
-  }, body);
+  }, body));
   const data = JSON.parse(res.Body);
   const state = {
     refresh_token: data.refresh_token,
@@ -191,32 +265,43 @@ async function keepAliveRefresh() {
     const store = await readStore();
     const seed  = (store && store.refresh_token) ? store.refresh_token : OAUTH.seed;
     await refreshAccess(seed);
-    console.log('Scheduled token refresh complete.');
+    qLog('Event: Scheduled Token Refresh\r\nStatus: Success\r\nNext refresh in: 8 hours');
   } catch (e) {
-    console.error('Scheduled refresh failed: ' + JSON.stringify(e));
+    qLog('Event: Scheduled Token Refresh\r\nStatus: FAILED\r\nError: ' + JSON.stringify(e));
   }
 }
 
 // ---- SmartThings HTTP helpers ----
 async function rawPost(deviceId, token, commands) {
-  return xapi.Command.HttpClient.Post({
+  return queueHttp(() => xapi.Command.HttpClient.Post({
     Url: DEVICE_BASE + deviceId + '/commands',
     Header: ['Authorization: Bearer ' + token, 'Content-Type: application/json'],
     AllowInsecureHTTPS: 'False',
+    Timeout: HTTP_QUEUE_TIMEOUT,
     ResultBody: 'PlainText'
-  }, JSON.stringify({ commands }));
+  }, JSON.stringify({ commands })));
 }
 async function sendTo(tv, parts) {
   const commands = parts.map(p => Object.assign({ component: 'main' }, p));
+  const isVolume = parts.length === 1 && parts[0].capability === 'audioVolume' && parts[0].command === 'setVolume';
+  const cmdSummary = parts.map(p => (p.capability + '.' + p.command + (p.arguments ? '(' + p.arguments + ')' : ''))).join(', ');
   try {
-    return await rawPost(tv.deviceId, await getAccessToken(), commands);
+    const result = await rawPost(tv.deviceId, await getAccessToken(), commands);
+    if (!isVolume) qLog('Event: API Command\r\nTV: ' + tv.name + '\r\nCommand: ' + cmdSummary + '\r\nResult: Success');
+    return result;
   } catch (e) {
     try {
       const store = await readStore();
       const seed  = (store && store.refresh_token) ? store.refresh_token : OAUTH.seed;
       const fresh = await refreshAccess(seed);
-      return await rawPost(tv.deviceId, fresh.access_token, commands);
-    } catch (e2) { console.error('Samsung command failed: ' + JSON.stringify(e2)); }
+      const result = await rawPost(tv.deviceId, fresh.access_token, commands);
+      if (!isVolume) qLog('Event: API Command (token refreshed)\r\nTV: ' + tv.name + '\r\nCommand: ' + cmdSummary + '\r\nResult: Success after retry');
+      return result;
+    } catch (e2) {
+      const msg = 'Event: API Command FAILED\r\nTV: ' + tv.name + '\r\nCommand: ' + cmdSummary + '\r\nError: ' + JSON.stringify(e2);
+      console.error(msg);
+      qLog(msg);
+    }
   }
 }
 async function getStatus(tv) {
@@ -225,12 +310,13 @@ async function getStatus(tv) {
   for (let attempt = 0; attempt < STATUS_RETRIES; attempt++) {
     try {
       const token = await getAccessToken();
-      const res = await xapi.Command.HttpClient.Get({
+      const res = await queueHttp(() => xapi.Command.HttpClient.Get({
         Url: DEVICE_BASE + tv.deviceId + '/status',
         Header: ['Authorization: Bearer ' + token],
         AllowInsecureHTTPS: 'False',
+        Timeout: HTTP_QUEUE_TIMEOUT,
         ResultBody: 'PlainText'
-      });
+      }));
       const main = JSON.parse(res.Body).components.main;
       commsOk();                 // a good response clears any error note
       return main;
@@ -249,42 +335,62 @@ async function togglePower(tv) {
     const main = await getStatus(tv);
     const s = main.switch && main.switch.switch ? main.switch.switch.value : 'off';
     await sendTo(tv, [{ capability: 'switch', command: s === 'on' ? 'off' : 'on' }]);
-  } catch (e) { console.error('power toggle failed: ' + JSON.stringify(e)); }
+  } catch (e) {
+    const msg = 'Event: Power Toggle FAILED\r\nTV: ' + tv.name + '\r\nError: ' + JSON.stringify(e);
+    console.error(msg); qLog(msg);
+  }
 }
 async function toggleMute(tv) {
   try {
-    tv._muted = !tv._muted;
     await sendTo(tv, [{ capability: 'audioMute', command: tv._muted ? 'mute' : 'unmute' }]);
-  } catch (e) { console.error('mute toggle failed: ' + JSON.stringify(e)); }
+  } catch (e) {
+    const msg = 'Event: Mute Toggle FAILED\r\nTV: ' + tv.name + '\r\nError: ' + JSON.stringify(e);
+    console.error(msg); qLog(msg);
+  }
 }
 function setInput(tv, key)  { return sendTo(tv, [{ capability: 'mediaInputSource', command: 'setInputSource', arguments: [key] }]); }
 function setVolume(tv, lvl) { return sendTo(tv, [{ capability: 'audioVolume', command: 'setVolume', arguments: [lvl] }]); }
 function powerOn(tv)        { return sendTo(tv, [{ capability: 'switch', command: 'on' }]); }
 function powerOff(tv)       { return sendTo(tv, [{ capability: 'switch', command: 'off' }]); }
 function artMode(tv) {
-  if (!tv.artCapability || !tv.artCommand) { console.warn('Art mode not configured for ' + tv.name); return; }
+  if (!tv.artCapability || !tv.artCommand) {
+    const msg = 'Event: Art Mode FAILED\r\nTV: ' + tv.name + '\r\nReason: Not configured';
+    console.warn(msg); qLog(msg); return;
+  }
   return sendTo(tv, [{ capability: tv.artCapability, command: tv.artCommand, arguments: [] }]);
 }
 
 // ---- Standby integration (per-display flags gate automatic behavior only) ----
 async function applyStandbyState(state) {
-  console.log('Standby state: ' + state);
+  qLog('Event: Standby State Change\r\nNew state: ' + state);
   if (!TVS || !TVS.length) return;
   for (const tv of TVS) {
     try {
       if (state === 'Off') {                 // fully awake
         if (tv.powerOnWhenAwake) {
+          qLog('Event: Standby Action\r\nTV: ' + tv.name + '\r\nAction: Power On + Input ' + tv.primaryHDMI);
           await powerOn(tv);
           await setInput(tv, tv.primaryHDMI);
         }
       } else if (state === 'Halfwake') {     // partial wake: power on only, plus art if enabled
-        if (tv.powerOnWhenAwake) await powerOn(tv);
-        if (tv.artModeOnHalfwake) await artMode(tv);
+        if (tv.powerOnWhenAwake) {
+          qLog('Event: Standby Action\r\nTV: ' + tv.name + '\r\nAction: Power On (Halfwake)');
+          await powerOn(tv);
+        }
+        if (tv.artModeOnHalfwake) {
+          qLog('Event: Standby Action\r\nTV: ' + tv.name + '\r\nAction: Art Mode (Halfwake)');
+          await artMode(tv);
+        }
       } else if (state === 'Standby') {      // asleep
-        if (tv.powerOffOnStandby) await powerOff(tv);
+        if (tv.powerOffOnStandby) {
+          qLog('Event: Standby Action\r\nTV: ' + tv.name + '\r\nAction: Power Off (Standby)');
+          await powerOff(tv);
+        }
       }
     } catch (e) {
-      console.error('standby apply failed for ' + tv.name + ': ' + JSON.stringify(e));
+      const msg = 'Event: Standby Action FAILED\r\nTV: ' + tv.name + '\r\nState: ' + state + '\r\nError: ' + JSON.stringify(e);
+      console.error(msg);
+      qLog(msg);
     }
   }
 }
@@ -303,7 +409,11 @@ function updateAbout() {
   setWidget('about_status', text);
 }
 function commsError(msg) {
-  if (lastError !== msg) { lastError = msg; updateAbout(); }
+  if (lastError !== msg) {
+    lastError = msg;
+    updateAbout();
+    qLog('Event: Communications Error\r\n' + msg);
+  }
 }
 function commsOk() {
   if (lastError) { lastError = ''; updateAbout(); }   // clear note once comms recover
@@ -329,7 +439,9 @@ async function syncOnOpen(i) {
     if (vol !== null && fresh)  setWidget('tv' + i + '_volume', Math.round(vol / 100 * 255));
     if (muted)                  tv._muted = (muted === 'muted');
   } catch (e) {
-    console.error('open sync failed for TV ' + i + ': ' + JSON.stringify(e));
+    const msg = 'Event: Panel Open Sync FAILED\r\nTV index: ' + i + '\r\nError: ' + JSON.stringify(e);
+    console.error(msg);
+    qLog(msg);
   }
 }
 
@@ -406,6 +518,7 @@ xapi.Event.UserInterface.Extensions.Widget.Action.on(async (e) => {
   // Shared codec control on the About page
   if (e.WidgetId === 'codec_state' && (e.Type === 'released' || e.Type === 'clicked')) {
     if (!debounced(e.WidgetId + e.Value)) return;
+    qLog('Event: Button Press\r\nWidget: codec_state\r\nValue: ' + e.Value);
     if (e.Value === 'awake')         await xapi.Command.Standby.Deactivate();
     else if (e.Value === 'halfwake') await xapi.Command.Standby.Halfwake();
     else if (e.Value === 'standby')  await xapi.Command.Standby.Activate();
@@ -420,14 +533,21 @@ xapi.Event.UserInterface.Extensions.Widget.Action.on(async (e) => {
   const action = m[2];
 
   if (action === 'hdmi' && (e.Type === 'released' || e.Type === 'clicked')) {
-    if (debounced(e.WidgetId + e.Value)) await setInput(tv, e.Value);
+    if (debounced(e.WidgetId + e.Value)) {
+      qLog('Event: Button Press\r\nTV: ' + tv.name + '\r\nAction: HDMI Input\r\nInput: ' + e.Value);
+      await setInput(tv, e.Value);
+    }
   } else if (action === 'volume' && e.Type === 'changed') {
     await setVolume(tv, Math.round((parseInt(e.Value, 10) / 255) * 100));
   } else if (action === 'mute' && e.Type === 'clicked') {
+    tv._muted = !tv._muted;
+    qLog('Event: Button Press\r\nTV: ' + tv.name + '\r\nAction: Mute\r\nMute state: ' + (tv._muted ? 'Muted' : 'Unmuted'));
     await toggleMute(tv);
   } else if (action === 'power' && e.Type === 'clicked') {
+    qLog('Event: Button Press\r\nTV: ' + tv.name + '\r\nAction: Power Toggle');
     await togglePower(tv);
   } else if (action === 'art' && e.Type === 'clicked') {
+    qLog('Event: Button Press\r\nTV: ' + tv.name + '\r\nAction: Art Mode');
     await artMode(tv);
   }
 });
@@ -458,9 +578,13 @@ async function init() {
     const standbyState = await xapi.Status.Standby.State.get();
     await applyStandbyState(standbyState);
 
-    console.log('Samsung TV control macro started with ' + TVS.length + ' TV(s).');
+    const msg = 'Event: Macro Started\r\nTV count: ' + TVS.length + '\r\nInitial standby state: ' + standbyState;
+    console.log(msg);
+    qLog(msg);
   } catch (e) {
-    console.error('Init failed: ' + JSON.stringify(e));
+    const msg = 'Event: Macro Start FAILED\r\nError: ' + JSON.stringify(e);
+    console.error(msg);
+    qLog(msg);
   }
 }
 init();
