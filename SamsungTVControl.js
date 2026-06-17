@@ -31,6 +31,7 @@ const PANEL_ID    = 'samsung_tv';
 const PANEL_NAME  = 'TVs';
 const INFO_URL    = 'https://github.com/vtjoeh/samsung_tv_control';
 const REFRESH_MS     = 8 * 60 * 60 * 1000;   // scheduled token refresh interval (8 hours)
+const KEEPALIVE_MS   = 60 * 60 * 1000;       // hourly status ping to keep TV network stack warm
 const SLIDER_FRESH_MS = 2500;                // only trust an on-open volume read this fast (ms)
 const STATUS_RETRIES  = 3;                   // attempts for a status read before giving up
 const STATUS_RETRY_MS = 1500;                // wait between status retries (ms)
@@ -41,9 +42,9 @@ const WEBEX_LOG_TIMEOUT  = 2;                // shorter timeout for the non-crit
 // Set to false to disable all Webex logging with no side effects. When false,
 // or when BOT_TOKEN / ROOM_ID are blank, logging is skipped silently (events
 // still go to the macro console).
-const POST_DEVICE_LOG_TO_WEBEX = false;
-const WEBEX_BOT_TOKEN = 'YOUR_WEBEX_BOT_TOKEN';
-const WEBEX_ROOM_ID   = 'YOUR_WEBEX_ROOM_ID';
+const POST_DEVICE_LOG_TO_WEBEX = true;
+const WEBEX_BOT_TOKEN = '';
+const WEBEX_ROOM_ID   = '';
 const WEBEX_URL       = 'https://webexapis.com/v1/messages';
 
 const DEFAULT_OAUTH = {
@@ -52,15 +53,14 @@ const DEFAULT_OAUTH = {
   seed:   'YOUR_SEED_REFRESH_TOKEN'
 };
 
-// One entry per TV. Add or remove entries; up to 4 are supported.
-// A TV with a blank deviceId is skipped and gets no panel page.
+// One entry per TV. Add up to 4.
 const DEFAULT_TVS = [
   {
     name:              'TV 1',
-    deviceId:          'YOUR_TV1_DEVICE_ID',
+    deviceId:          '',
     inputs:            ['HDMI1', 'HDMI2', 'HDMI3'],
     primaryHDMI:       'HDMI1',
-    artCapability:     'samsungvd.ambient',   // '' to disable the art button
+    artCapability:     'samsungvd.ambient',
     artCommand:        'setAmbientOn',
     powerOffOnStandby: true,
     artModeOnHalfwake: false,
@@ -68,23 +68,23 @@ const DEFAULT_TVS = [
   },
   {
     name:              'TV 2',
-    deviceId:          'YOUR_TV2_DEVICE_ID',
+    deviceId:          '',
     inputs:            ['HDMI1', 'HDMI2', 'HDMI3'],
     primaryHDMI:       'HDMI1',
     artCapability:     'samsungvd.ambient',
     artCommand:        'setAmbientOn',
-    powerOffOnStandby: false,
+    powerOffOnStandby: true,
     artModeOnHalfwake: true,
     powerOnWhenAwake:  true
   },
   {
     name:              'TV 3',
-    deviceId:          'YOUR_TV3_DEVICE_ID',
+    deviceId:          '',
     inputs:            ['HDMI1', 'HDMI2', 'HDMI3'],
     primaryHDMI:       'HDMI1',
     artCapability:     'samsungvd.ambient',
     artCommand:        'setAmbientOn',
-    powerOffOnStandby: false,
+    powerOffOnStandby: true,
     artModeOnHalfwake: true,
     powerOnWhenAwake:  true
   }
@@ -271,6 +271,22 @@ async function keepAliveRefresh() {
   }
 }
 
+
+// ---- Hourly status keep-alive ----
+// Polls each TV's status once per hour. The intent is to keep the TV's network
+// stack warm overnight so the first morning wake command responds quickly instead
+// of waiting for the TV to re-establish its cloud connection from a cold start.
+// Results are discarded unless they reveal a comms error.
+async function keepAliveStatus() {
+  if (!TVS || !TVS.length) return;
+  for (const tv of TVS) {
+    try {
+      await getStatus(tv);
+    } catch (e) {
+      // getStatus already calls commsError() on repeated failure; nothing more needed here
+    }
+  }
+}
 // ---- SmartThings HTTP helpers ----
 async function rawPost(deviceId, token, commands) {
   return queueHttp(() => xapi.Command.HttpClient.Post({
@@ -597,7 +613,8 @@ async function init() {
     loadSettings();
     await buildPanel();
     await getAccessToken();                     // refresh only if the stored token is near expiry
-    setInterval(keepAliveRefresh, REFRESH_MS);  // forced rotation only on the 8-hour timer
+    setInterval(keepAliveRefresh, REFRESH_MS);   // forced rotation only on the 8-hour timer
+    setInterval(keepAliveStatus,   KEEPALIVE_MS); // hourly ping to keep TV network stack warm
 
     const standbyState = await xapi.Status.Standby.State.get();
     await applyStandbyState(standbyState);
