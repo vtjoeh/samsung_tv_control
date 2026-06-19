@@ -1,12 +1,12 @@
-# Samsung TV Control for Cisco RoomOS — Setup Guide
+# Setup Guide: Samsung TV Control for Cisco RoomOS
 
-Control 1 to 4 Samsung TVs from a Cisco RoomOS device using the SmartThings cloud API. No bridge or extra server required. The macro builds its own Control Panel, syncs the GUI on open, and integrates with the codec's standby state.
+Control 1 to 4 Samsung displays from a Cisco RoomOS device using the SmartThings cloud API. No bridge or extra server required. The macro builds its own Control Panel, syncs the GUI on open, and responds automatically to codec standby state, calls, and content sharing.
 
 ---
 
 ## Prerequisites
 
-- A SmartThings account with your Samsung TV(s) already added in the SmartThings mobile app
+- A SmartThings account with your Samsung display(s) already added in the SmartThings mobile app
 - A Cisco RoomOS device (RoomOS 11.x)
 - The `SamsungTVControl.js` macro file
 - A computer (Mac or Windows) to run the one-time setup
@@ -43,7 +43,9 @@ smartthings --version
 ```
 smartthings --version
 ```
+
 > If `smartthings` is not recognized, use the full path to the downloaded `.exe`, or add its folder to your PATH.
+
 ---
 
 ## Step 2: Create the OAuth App
@@ -64,13 +66,15 @@ A browser opens to log in with your Samsung account. Approve, then return to the
 | Scopes           | `r:devices:*` and `x:devices:*` |
 | Redirect URI     | `https://httpbin.org/get`       |
 
-At the end the CLI prints your credentials. **Save both now — they are shown only once.**
+At the end the CLI prints your credentials. **Save both now. They are shown only once.**
 
 ```
 OAuth Client Id      xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
 OAuth Client Secret  xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
 ```
+
 > Do not use `https://localhost` as the redirect URI. It causes a 403 error during authorization. Use `https://httpbin.org/get`.
+
 ---
 
 ## Step 3: Get the Authorization Code
@@ -81,7 +85,7 @@ Paste this URL into a browser, replacing `YOUR_CLIENT_ID`:
 https://api.smartthings.com/oauth/authorize?client_id=YOUR_CLIENT_ID&response_type=code&redirect_uri=https://httpbin.org/get&scope=r:devices:*+x:devices:*
 ```
 
-Log in, approve access, and **make sure your TV(s) are selected** on the device consent screen. The browser lands on an httpbin JSON page. Copy the `code` value from the URL bar or the `args` section of the JSON. The code is valid for a few minutes.
+Log in, approve access, and **make sure all your displays are selected** on the device consent screen. The browser lands on an httpbin JSON page. Copy the `code` value from the URL bar or the `args` section of the JSON. The code is valid for a few minutes.
 
 ---
 
@@ -114,7 +118,7 @@ The response contains your tokens:
 
 ---
 
-## Step 5: Get Your TV Device ID(s)
+## Step 5: Get Your Display Device ID(s)
 
 ### macOS
 
@@ -128,7 +132,7 @@ curl -H "Authorization: Bearer YOUR_ACCESS_TOKEN" "https://api.smartthings.com/v
 curl.exe -H "Authorization: Bearer YOUR_ACCESS_TOKEN" "https://api.smartthings.com/v1/devices"
 ```
 
-Find each Samsung TV by name in the JSON and copy its `deviceId`. It is a UUID like:
+Find each display by name in the JSON and copy its `deviceId`. It is a UUID like:
 
 ```
 8cb41ce6-b21e-beac-6eed-1f790096b898
@@ -144,7 +148,7 @@ Open `SamsungTVControl.js` and fill in the two configuration blocks near the top
 
 ### 6a: OAuth credentials
 
-```
+```js
 const DEFAULT_OAUTH = {
   client: 'YOUR_CLIENT_ID',
   secret: 'YOUR_CLIENT_SECRET',
@@ -158,64 +162,80 @@ Replace:
 - `YOUR_CLIENT_SECRET` with the OAuth Client Secret from Step 2
 - `YOUR_SEED_REFRESH_TOKEN` with the `refresh_token` from Step 4
 
-### 6b: TV settings
+### 6b: Schedule (optional)
 
-The file ships with three TV entries. Fill in the device IDs you want and delete any entries you do not need.
+The file includes a `BUSINESS_HOURS` schedule you can reference in any display's state actions. Inside the window the display shows art; outside it powers off.
 
+```js
+const BUSINESS_HOURS = {
+  weekdays: { startTime: '08:00', endTime: '17:00' },   // Mon-Fri
+  weekends: null                                        // off all weekend
+};
 ```
+
+You can also use a flat form for the same window every day:
+
+```js
+{ startTime: '08:00', endTime: '17:00' }
+```
+
+### 6c: Display settings
+
+The file ships with entries for each display. Fill in the device IDs from Step 5 and delete any entries you do not need. A display with a blank `deviceId` is skipped and gets no panel page.
+
+```js
 const DEFAULT_TVS = [
   {
-    name:              'TV 1',
-    deviceId:          'YOUR_TV1_DEVICE_ID',
-    inputs:            ['HDMI1', 'HDMI2', 'HDMI3'],
-    primaryHDMI:       'HDMI1',
-    artCapability:     'samsungvd.ambient',
-    artCommand:        'setAmbientOn',
-    powerOffOnStandby: true,
-    artModeOnHalfwake: false,
-    powerOnWhenAwake:  true
+    name:          'Front Display',
+    deviceId:      'YOUR_DEVICE_ID',
+    inputs:        ['HDMI1', 'HDMI2', 'HDMI3'],
+    primaryHDMI:   'HDMI1',
+    standby:                   'off',
+    halfwake:                  'on',
+    standbyOff:                'on',
+    call:                      'on',
+    contentShareOutsideOfCall: 'on'
   },
   {
-    name:              'TV 2',
-    deviceId:          'YOUR_TV2_DEVICE_ID',
-    inputs:            ['HDMI1', 'HDMI2', 'HDMI3'],
-    primaryHDMI:       'HDMI1',
-    artCapability:     'samsungvd.ambient',
-    artCommand:        'setAmbientOn',
-    powerOffOnStandby: true,
-    artModeOnHalfwake: true,
-    powerOnWhenAwake:  true
-  },
-  {
-    name:              'TV 3',
-    deviceId:          'YOUR_TV3_DEVICE_ID',
-    inputs:            ['HDMI1', 'HDMI2', 'HDMI3'],
-    primaryHDMI:       'HDMI1',
-    artCapability:     'samsungvd.ambient',
-    artCommand:        'setAmbientOn',
-    powerOffOnStandby: true,
-    artModeOnHalfwake: true,
-    powerOnWhenAwake:  true
+    name:          'Left Display',
+    deviceId:      'YOUR_DEVICE_ID',
+    inputs:        ['HDMI1', 'HDMI2', 'HDMI3'],
+    primaryHDMI:   'HDMI1',
+    standby:                   BUSINESS_HOURS,
+    halfwake:                  'art',
+    standbyOff:                'art',
+    call:                      'on',
+    contentShareOutsideOfCall: 'on'
   }
 ];
 ```
 
-Replace `YOUR_TV1_DEVICE_ID` (and `YOUR_TV2_DEVICE_ID`, `YOUR_TV3_DEVICE_ID`) with the device IDs from Step 5. A TV with a blank `deviceId` is skipped and gets no panel page.
+### Per-display settings reference
 
-### Per-TV settings reference
+| Field                       | Purpose                                                              |
+| --------------------------- | -------------------------------------------------------------------- |
+| `name`                      | Page title shown on the panel tab                                    |
+| `deviceId`                  | SmartThings device UUID (blank = disabled)                           |
+| `inputs`                    | HDMI buttons shown, in order                                         |
+| `primaryHDMI`               | Input selected when `'on'` action fires                              |
+| `standby`                   | Action when codec enters Standby                                     |
+| `halfwake`                  | Action when codec enters Halfwake                                    |
+| `standbyOff`                | Action when codec becomes fully awake (also the post-call baseline)  |
+| `call`                      | Action when a call starts                                            |
+| `contentShareOutsideOfCall` | Action when local content is shared outside a call                   |
 
-| Field                          | Purpose                                                         |
-| ------------------------------ | --------------------------------------------------------------- |
-| `name`                         | Page title shown on the panel tab                               |
-| `deviceId`                     | SmartThings device UUID (blank = disabled)                      |
-| `inputs`                       | HDMI buttons shown, in order                                    |
-| `primaryHDMI`                  | Input selected when the codec wakes fully                       |
-| `artCapability` / `artCommand` | Art/Ambient mode command (`''` disables the art button)         |
-| `powerOffOnStandby`            | `true` = power the TV off when the codec sleeps                 |
-| `artModeOnHalfwake`            | `true` = trigger art mode when the codec half-wakes             |
-| `powerOnWhenAwake`             | `true` = power on (and select primaryHDMI) when the codec wakes |
+**Action values:**
 
-> The flags only affect automatic standby behavior. The manual panel buttons always attempt their command regardless of the flags.
+| Value            | Effect                                                                 |
+| ---------------- | ---------------------------------------------------------------------- |
+| `'on'`           | Power on and switch to `primaryHDMI`                                   |
+| `'off'`          | Power off                                                              |
+| `'art'`          | Trigger art/ambient mode                                               |
+| Schedule object  | Art inside the time window, off outside it                             |
+| `null` (omitted) | No automatic action for this state                                     |
+
+> The state actions only affect automatic behavior. The manual panel buttons always send their command regardless.
+
 ---
 
 ## Step 7: Enable HttpClient on the Device
@@ -238,21 +258,22 @@ You can load the macro locally on the device or centrally through Control Hub.
 **Local (device web interface):**
 
 1. Open the device web UI at `https://DEVICE-IP` (or `https://localhost` when connected directly to the device).
-2. Go to **Macro Editor -> Import from file** (or New) -> load `SamsungTVControl.js` -> Save -> Activate.
+2. Go to **Macro Editor > Import from file** (or New), load `SamsungTVControl.js`, Save, and Activate.
 
 **Control Hub (`https://admin.webex.com`):**
 
 1. Sign in at `https://admin.webex.com`.
-2. Go to **Management -> Devices** and select the device.
-3. Open **Macros** (or **Configurations -> Macros**, depending on your view).
+2. Go to **Management > Devices** and select the device.
+3. Open **Macros** (or **Configurations > Macros**, depending on your view).
 4. Add a new macro, paste or upload `SamsungTVControl.js`, Save, and Activate. Control Hub pushes it to the device.
 
 **Then, for either method:**
 
-5. Leave the auto-created `SamsungTV_Store` macro **disabled**. It is data only, holds the rotating token, and must never be activated or deleted while the integration is running.
-6. Open the **Control Panel** on the Navigator or Touch controller -> **TVs** -> test each page.
+5. Leave the auto-created `SamsungTV_Store` macro **disabled**. It holds the rotating token and must never be activated or deleted while the integration is running.
+6. Open the **Control Panel** on the Navigator or Touch controller, go to **TVs**, and test each page.
 
-> You do not need to reboot the codec to apply changes. Just restart the macro: toggle it off and back on in the Macro Editor, or press Save. The macro rebuilds its panel and re-reads its token on every restart.
+> You do not need to reboot the codec to apply changes. Restart the macro by toggling it off and back on in the Macro Editor, or by pressing Save. The macro rebuilds its panel and re-reads its token on every restart.
+
 ---
 
 ## Multiple Room Deployments
@@ -263,33 +284,39 @@ For each room:
 
 1. Repeat only **Step 3** (browser authorization) and **Step 4** (token exchange) to mint a unique refresh token.
 2. Put that token in that room's `DEFAULT_OAUTH.seed`, keeping `client` and `secret` identical across all rooms.
-3. Use the correct `deviceId` for that room's TV(s).
+3. Use the correct `deviceId` values for that room's displays.
 
 Notes:
 
-- If all TVs are in one Samsung account and location, a single authorization sees every TV, so you reuse the relevant `deviceId` per room. If TVs span different Samsung accounts, authorize once per account.
+- If all displays are in one Samsung account and location, a single authorization sees every device, so you reuse the relevant `deviceId` per room. If displays span different Samsung accounts, authorize once per account.
 - SmartThings rate-limits token requests to 120 per hour per client ID, which is ample for the 8-hour refresh cycle across many rooms.
 
 ---
 
 ## How It Works
 
-- **Tokens.** The macro refreshes the access token every 8 hours and persists the rotating refresh token to the `SamsungTV_Store` macro. As long as the device is online at least once every 29 days, it runs indefinitely with no user interaction.
-- **GUI sync.** When you open the panel or switch TV tabs, the macro reads the TV once and sets the HDMI highlight (and the volume slider if the read returns quickly). The status line shows static config info (`Primary` input and whether `Art` is supported).
-- **Resilience.** Transient SmartThings errors, common when a TV is just waking, are retried automatically. The About page shows the last token refresh time and any current error note, which clears once communication recovers.
-- **Standby.** When the codec changes wake state, the macro applies each TV's flags: power off on standby, art on half-wake, power on and primary input when awake. The Video Device buttons (Awake / Halfwake / Standby) on the About page drive the codec, which then cascades to the TVs.
+**Tokens.** The macro refreshes the access token every 8 hours and persists the rotating refresh token to the `SamsungTV_Store` macro. As long as the device is online at least once every 29 days, it runs indefinitely with no user interaction.
+
+**Automatic display control.** Each display has five configurable state actions. When the codec changes state (standby, halfwake, fully awake, call start/end, content share start/stop), the macro resolves the action for each display and sends it. The priority order is: active call first, then local content share, then codec standby state. On macro restart, the same priority check runs immediately so displays always reflect the current situation. The macro tracks the last action sent per display and skips a command if the display is already in that state, to avoid unnecessary API calls and on-screen notifications.
+
+**Schedules.** A schedule object resolves to art inside its time window and off outside it. The hourly keep-alive timer re-evaluates any active schedule so boundaries (for example, switching from art to off at 17:00) are honored even when no codec event fires.
+
+**GUI.** The panel has one page per display (HDMI input buttons, art mode, volume, mute, power) and an About page with Re-sync Displays, Video Device Action buttons (Awake / Halfwake / Standby), and Simulate buttons for testing display actions without an actual call or PC share. All group buttons are momentary and clear after each press.
+
+**Resilience.** Transient SmartThings errors (common when a display is waking) are retried automatically. The About page shows the last token refresh time and any current error note, which clears once communication recovers.
 
 ---
 
 ## Troubleshooting
 
-| Symptom                                 | Cause / Fix                                                                                                              |
-| --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
-| 403 during Step 3 authorize             | Redirect URI was `https://localhost`. Recreate the app with `https://httpbin.org/get`.                                   |
-| `invalid_grant` on a manual refresh     | The seed was already rotated by the macro. The live token now lives in `SamsungTV_Store`. Do not clear that macro.       |
-| Commands return 403 `Not authorized`    | The device ID is wrong, or the TV was not selected during authorization. Re-run Step 5 and confirm the exact `deviceId`. |
-| 401 on a command                        | The access token expired. The macro auto-refreshes; if testing by hand, refresh first.                                   |
-| "No available http connections" at boot | Transient startup race. It self-recovers on the next action.                                                             |
+| Symptom                                      | Cause and fix                                                                                                            |
+| -------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| 403 during Step 3 authorize                  | Redirect URI was `https://localhost`. Recreate the app with `https://httpbin.org/get`.                                   |
+| `invalid_grant` on a manual refresh          | The seed was already rotated by the macro. The live token now lives in `SamsungTV_Store`. Do not clear that macro.       |
+| Commands return 403 `Not authorized`         | The device ID is wrong, or the display was not selected during authorization. Re-run Step 5 and confirm the `deviceId`.  |
+| 401 on a command                             | The access token expired. The macro auto-refreshes; if testing by hand, refresh first.                                   |
+| "No available http connections" at boot      | Transient startup race. It self-recovers on the next action.                                                             |
+| Display flips to wrong state after macro restart | The macro re-evaluates context on start. Check that `standbyOff`, `call`, and `contentShareOutsideOfCall` are set as intended. |
 
 ---
 
@@ -300,4 +327,4 @@ If the device is offline for more than 29 days, the refresh token chain lapses. 
 1. Repeat Steps 3 and 4 to get a new seed refresh token.
 2. Update `seed` in `DEFAULT_OAUTH`.
 3. In the Macro Editor, set the `SamsungTV_Store` content to `{}` and save.
-4. Reboot the device.
+4. Restart the macro.
