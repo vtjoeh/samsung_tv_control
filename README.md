@@ -30,6 +30,8 @@ OAuth credentials and TV device IDs live directly in `SamsungTVControl.js`; do n
 - Samsung 98" BE98D-H Series 4K Business Pro TV (SW ver. 1296)
 - Samsung 75" QN90F (SW ver. 1296)
 
+Note: It has not yet been tested against the Samsung [Cisco certified displays](https://help.webex.com/en-us/article/7sw4gab/Cisco-collaboration-devices-certification-program). 
+
 ## Setup
 
 See [SetupSmartTVControl.md](SetupSmartTVControl.md) for full step-by-step instructions covering Mac and Windows. At a high level: install the SmartThings CLI, create an OAuth-In app, do a one-time browser authorization using `https://httpbin.org/get` as the redirect URI, exchange the code for a refresh token, look up your TV device IDs, fill in the placeholder blocks in `SamsungTVControl.js`, enable `HttpClient Mode` on the codec, and load the macro. Add `SamsungTV_Store.js` to your `.gitignore` to avoid accidentally publishing a live token.
