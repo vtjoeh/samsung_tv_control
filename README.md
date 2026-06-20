@@ -23,11 +23,12 @@ OAuth credentials and TV device IDs live directly in `SamsungTVControl.js`; do n
 <img width="1060" height="650" alt="screenShot" src="https://github.com/user-attachments/assets/d7564728-40b3-4957-a93c-e8b4991c10d5" />
 
 ## Tested versions
-Teston on a Room Kit EQ in Microsoft Teams Rooms mode. It should work on RoomOS mode. 
-- Room Kit EQ RoomOS 
-- Samsung: 75" The Frame Pro LS03FW 
-- Samsung QMC
-- Samsung QN90F
+- Room Kit EQ in Microsoft Teams Rooms mode, but should work on RoomOS. 
+-- Microsoft Teams app: 13-2025-12-01
+-- RoomOS 26.6.1.4 (while in MTR mode)
+- Samsung 75" The Frame Pro LS03FW (SW ver. 1296)
+- Samsung 98" BE98D-H Series 4K Business Pro TV (SW ver. 1296)
+- Samsung 75" QN90F (SW ver. 1296)
 
 ## Setup
 
