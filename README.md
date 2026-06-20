@@ -1,4 +1,4 @@
-f# Cisco RoomOS Samsung TV Control
+# Cisco RoomOS Samsung TV Control
 
 A Cisco RoomOS macro that controls 1 to 4 Samsung TVs via the SmartThings cloud API. No bridge, no extra server, and no ongoing maintenance required. The macro builds its own Control Panel with one page per TV. 
 
@@ -21,6 +21,13 @@ Options:
 OAuth credentials and TV device IDs live directly in `SamsungTVControl.js`; do not commit your filled-in copy to a public repo. The access token refreshes every 8 hours and rotates the refresh token to a local storage macro, keeping the integration alive indefinitely as long as the codec is online at least once every 29 days.
 
 <img width="1060" height="650" alt="screenShot" src="https://github.com/user-attachments/assets/d7564728-40b3-4957-a93c-e8b4991c10d5" />
+
+## Tested versions
+Teston on a Room Kit EQ in Microsoft Teams Rooms mode. It should work on RoomOS mode. 
+- Room Kit EQ RoomOS 
+- Samsung: 75" The Frame Pro LS03FW 
+- Samsung QMC
+- Samsung QN90F
 
 ## Setup
 
