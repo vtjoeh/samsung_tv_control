@@ -4,7 +4,7 @@ A Cisco RoomOS macro that controls 1 to 4 Samsung TVs via the SmartThings cloud 
 
 This integration is primarily useful in two scenarios: 
 - It enables the Cisco codec to automatically put a Samsung Frame TV into Art Mode when the room goes to half-wake or standby, which is not possible via HDMI CEC since CEC has no opcode for Art Mode. 
-- It solves a common problem in rooms where an HDMI distribution amplifier or matrix switch disrupts HDMI CEC signaling, preventing the codec from telling a Samsung TV to sleep or wake via the normal CEC path. Since this integration communicates through the SmartThings cloud rather than over HDMI, it is completely independent of CEC and works regardless of what is in the signal chain.
+- It solves a common problem in rooms where an HDMI distribution amplifier or matrix switch disrupts HDMI CEC signaling, preventing the codec from telling a Samsung TV to sleep or wake via the normal CEC path. 
 
 Each TV in the `DEFAULT_TVS` array has five per-display state keys that map a codec state to an action: 
 - `standby`, 
